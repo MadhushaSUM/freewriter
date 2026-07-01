@@ -1,0 +1,23 @@
+{
+  "name": "@freewriter/core",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Pure TypeScript canvas-based word processor engine — data models, layout, measurement, and rendering",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "tsc --project tsconfig.json --watch",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}

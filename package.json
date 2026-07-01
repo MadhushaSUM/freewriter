@@ -1,0 +1,17 @@
+{
+  "name": "freewriter",
+  "version": "0.0.1",
+  "private": true,
+  "description": "A fully featured, pixel-perfect, open-source word processor built on HTML5 Canvas",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "clean": "turbo clean"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.0"
+  },
+  "packageManager": "pnpm@9.15.0"
+}
