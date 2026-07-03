@@ -34,6 +34,8 @@ interface LayoutLine {
   ascent: number;
   descent: number;
   lineHeight: number;
+  spaceBefore: number;
+  spaceAfter: number;
 }
 
 /** A laid-out page containing lines and its vertical position */
@@ -197,6 +199,9 @@ export class CanvasRenderer {
       let lineY = pageY + pageSettings.marginTop;
 
       for (const line of page.lines) {
+        // Add paragraph space before this line
+        lineY += line.spaceBefore;
+
         // Position baseline: advance by ascent portion of line height
         const leading = (line.lineHeight - line.ascent - line.descent) / 2;
         const baselineY = lineY + leading + line.ascent;
@@ -204,6 +209,9 @@ export class CanvasRenderer {
         this.drawLine(line, contentX, baselineY);
 
         lineY += line.lineHeight;
+
+        // Add paragraph space after this line
+        lineY += line.spaceAfter;
       }
     }
   }
@@ -328,6 +336,8 @@ export class CanvasRenderer {
       ascent: maxAscent,
       descent: maxDescent,
       lineHeight,
+      spaceBefore: 0,
+      spaceAfter: 0,
     };
   }
 
@@ -363,25 +373,25 @@ export class CanvasRenderer {
       const spaceAfter =
         paragraph.spaceAfter ?? DEFAULT_PARAGRAPH_PROPS.spaceAfter;
 
-      // Add space before paragraph
-      currentY += spaceBefore;
-
       // Tokenize and wrap
       const words = this.tokenizeParagraph(paragraph, doc.defaultStyle);
       const lines = this.wrapLines(words, contentWidth, paragraph);
 
+      // Attach paragraph spacing to the first and last lines
+      const firstLine = lines[0];
+      const lastLine = lines[lines.length - 1];
+      if (firstLine) firstLine.spaceBefore = spaceBefore;
+      if (lastLine) lastLine.spaceAfter = spaceAfter;
+
       for (const line of lines) {
         // Check if this line would overflow the current page
-        if (currentY + line.lineHeight > contentHeight && currentPageLines.length > 0) {
+        if (currentY + line.spaceBefore + line.lineHeight > contentHeight && currentPageLines.length > 0) {
           startNewPage();
         }
 
         currentPageLines.push(line);
-        currentY += line.lineHeight;
+        currentY += line.spaceBefore + line.lineHeight + line.spaceAfter;
       }
-
-      // Add space after paragraph
-      currentY += spaceAfter;
     }
 
     // Push final page
