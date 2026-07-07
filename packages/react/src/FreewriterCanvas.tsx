@@ -3,18 +3,33 @@
  *
  * A React component that bridges the pure-TS @freewriter/core engine
  * with the React component lifecycle. It manages:
- * - Canvas element ref and 2D context initialization
- * - CanvasRenderer instantiation
+ * - Canvas element ref and Editor initialization
+ * - Editor lifecycle (mount/destroy) synced with React effects
  * - Window resize observation for responsive re-renders
  * - DPR-aware re-rendering on document or size changes
+ * - Document prop syncing to the Editor's state
+ *
+ * Phase 2: Uses the Editor facade instead of directly managing the
+ * CanvasRenderer, enabling interactive editing (typing, caret,
+ * selection) out of the box.
  */
 
 "use client";
 
-import {type CSSProperties, useCallback, useEffect, useRef,} from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
-import type {FreewriterDocument, RendererConfig} from "@freewriter/core";
-import {CanvasRenderer} from "@freewriter/core";
+import type {
+  FreewriterDocument,
+  RendererConfig,
+  DocumentPosition,
+} from "@freewriter/core";
+import {Editor} from "@freewriter/core";
 
 // ─── Props ─────────────────────────────────────────────────────────
 
@@ -30,68 +45,125 @@ export interface FreewriterCanvasProps {
 
   /** Optional inline styles for the scroll container */
   style?: CSSProperties;
+
+  /**
+   * Callback fired when the cursor position changes.
+   * Useful for status bar updates (e.g., "Paragraph 3, Char 42").
+   */
+  onCursorChange?: (cursor: DocumentPosition) => void;
+
+  /**
+   * Callback fired when the document is modified by user input.
+   * Receives the updated document.
+   */
+  onDocumentChange?: (document: FreewriterDocument) => void;
 }
 
 // ─── Component ─────────────────────────────────────────────────────
 
 export function FreewriterCanvas({
-                                   document,
-                                   rendererConfig,
-                                   className,
-                                   style,
-                                 }: FreewriterCanvasProps): React.JSX.Element {
+  document,
+  rendererConfig,
+  className,
+  style,
+  onCursorChange,
+  onDocumentChange,
+}: FreewriterCanvasProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rendererRef = useRef<CanvasRenderer | null>(null);
+  const editorRef = useRef<Editor | null>(null);
+  const [, setRenderTick] = useState(0);
 
   /**
-   * Performs a full render pass: re-draws the document onto the canvas.
-   */
-  const renderDocument = useCallback(() => {
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!canvas || !container) return;
-
-    // Initialize renderer lazily
-    if (!rendererRef.current) {
-      rendererRef.current = new CanvasRenderer(canvas, rendererConfig);
-    }
-
-    const renderer = rendererRef.current;
-
-    // Set canvas CSS width to fill its container
-    canvas.style.width = `${container.clientWidth}px`;
-
-    // Render the document
-    renderer.render(document);
-  }, [document, rendererConfig]);
-
-  /**
-   * Effect: re-render when the document changes.
+   * Effect: Initialize the Editor once the canvas is mounted.
+   * The Editor manages its own lifecycle (input handlers, caret animation, etc.)
    */
   useEffect(() => {
-    renderDocument();
-  }, [renderDocument]);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Set canvas CSS width to fill its container
+    const container = containerRef.current;
+    if (container) {
+      canvas.style.width = `${container.clientWidth}px`;
+    }
+
+    const editor = new Editor({
+      canvas,
+      document,
+      rendererConfig,
+    });
+
+    editor.mount();
+    editorRef.current = editor;
+
+    // Wire up optional callbacks
+    const subscriptions: Array<() => void> = [];
+
+    if (onCursorChange) {
+      subscriptions.push(
+        editor.state.events.on("cursor-change", ({cursor}) => {
+          onCursorChange(cursor);
+        })
+      );
+    }
+
+    if (onDocumentChange) {
+      subscriptions.push(
+        editor.state.events.on("document-change", ({document: doc}) => {
+          onDocumentChange(doc);
+        })
+      );
+    }
+
+    return () => {
+      for (const unsub of subscriptions) {
+        unsub();
+      }
+      editor.destroy();
+      editorRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rendererConfig]);
 
   /**
-   * Effect: observe container resize and re-render.
+   * Effect: Sync document prop changes to the editor.
+   * Only applies when the document reference changes externally.
+   */
+  useEffect(() => {
+    if (editorRef.current) {
+      editorRef.current.setDocument(document);
+    }
+  }, [document]);
+
+  /**
+   * Handles resize: force the editor to re-render when the container size changes.
+   */
+  const handleResize = useCallback(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    const editor = editorRef.current;
+    if (!canvas || !container || !editor) return;
+
+    canvas.style.width = `${container.clientWidth}px`;
+    editor.requestRender();
+    setRenderTick((t) => t + 1);
+  }, []);
+
+  /**
+   * Effect: observe container resize.
    */
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    const resizeObserver = new ResizeObserver(() => {
-      // Re-create renderer on resize to handle DPR changes
-      rendererRef.current = null;
-      renderDocument();
-    });
-
+    const resizeObserver = new ResizeObserver(handleResize);
     resizeObserver.observe(container);
 
     return () => {
       resizeObserver.disconnect();
     };
-  }, [renderDocument]);
+  }, [handleResize]);
 
   /**
    * Effect: listen for DPR changes (e.g., moving window between monitors).
@@ -102,8 +174,7 @@ export function FreewriterCanvas({
     );
 
     const handleDPRChange = (): void => {
-      rendererRef.current = null;
-      renderDocument();
+      editorRef.current?.requestRender();
     };
 
     mediaQuery.addEventListener("change", handleDPRChange);
@@ -111,7 +182,7 @@ export function FreewriterCanvas({
     return () => {
       mediaQuery.removeEventListener("change", handleDPRChange);
     };
-  }, [renderDocument]);
+  }, []);
 
   return (
     <div
@@ -121,6 +192,7 @@ export function FreewriterCanvas({
         overflow: "auto",
         width: "100%",
         height: "100%",
+        position: "relative",
         ...style,
       }}
     >
@@ -129,6 +201,7 @@ export function FreewriterCanvas({
         style={{
           display: "block",
           margin: "0 auto",
+          cursor: "text",
         }}
       />
     </div>

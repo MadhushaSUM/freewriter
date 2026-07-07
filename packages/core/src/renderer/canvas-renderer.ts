@@ -8,41 +8,33 @@
  * - Word-level line wrapping within the content area
  * - Multi-style text runs (bold, italic, different sizes/fonts)
  * - Page gap rendering (Google Docs-style paper on gray background)
+ * - Caret and selection rendering (Phase 2)
  *
- * This renderer is stateless per render call — it reads the document
- * model and produces canvas draw commands. No mutation of the model.
+ * This renderer stores its last layout result so the LayoutIndex can
+ * build a searchable character-position index for hit-testing and
+ * caret placement.
  */
 
-import type {FreewriterDocument, PageSettings, Paragraph, TextRun, TextStyle,} from "../model/document.js";
-import {DEFAULT_PAGE_SETTINGS, DEFAULT_PARAGRAPH_PROPS,} from "../model/document.js";
+import type {
+  FreewriterDocument,
+  PageSettings,
+  Paragraph,
+  TextRun,
+  TextStyle,
+} from "../model/document.js";
+import {
+  DEFAULT_PAGE_SETTINGS,
+  DEFAULT_PARAGRAPH_PROPS,
+} from "../model/document.js";
 
 import {resolveStyle, TextMeasurer} from "../measurement/text-measurer.js";
 
-// ─── Layout Types ────────────────────────────────────────────────────
-
-/** A single word token with its resolved style and measured width */
-interface StyledWord {
-  text: string;
-  style: TextStyle;
-  width: number;
-}
-
-/** A laid-out line: an array of styled words that fit within the content width */
-interface LayoutLine {
-  words: StyledWord[];
-  totalWidth: number;
-  ascent: number;
-  descent: number;
-  lineHeight: number;
-  spaceBefore: number;
-  spaceAfter: number;
-}
-
-/** A laid-out page containing lines and its vertical position */
-interface LayoutPage {
-  lines: LayoutLine[];
-  pageIndex: number;
-}
+import type {
+  StyledWord,
+  LayoutLine,
+  LayoutPage,
+  CharacterRect,
+} from "../layout/layout-types.js";
 
 // ─── Renderer Configuration ──────────────────────────────────────────
 
@@ -86,9 +78,15 @@ const DEFAULT_RENDERER_CONFIG: Readonly<RendererConfig> = {
 export class CanvasRenderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
-  private measurer: TextMeasurer;
-  private config: RendererConfig;
+  private readonly _measurer: TextMeasurer;
+  private readonly _config: RendererConfig;
   private dpr: number = 1;
+
+  /** The last computed layout result, accessible for LayoutIndex building */
+  private _lastLayout: LayoutPage[] = [];
+
+  /** The last CSS width used during rendering */
+  private _lastCssWidth: number = 0;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -102,8 +100,8 @@ export class CanvasRenderer {
     }
 
     this.ctx = ctx;
-    this.measurer = new TextMeasurer(ctx);
-    this.config = {...DEFAULT_RENDERER_CONFIG, ...config};
+    this._measurer = new TextMeasurer(ctx);
+    this._config = {...DEFAULT_RENDERER_CONFIG, ...config};
   }
 
   /** The total height of the rendered content (for scroll containers) */
@@ -112,6 +110,26 @@ export class CanvasRenderer {
   /** The total rendered height in CSS pixels */
   get totalHeight(): number {
     return this._totalHeight;
+  }
+
+  /** Exposes the text measurer for LayoutIndex building */
+  get measurer(): TextMeasurer {
+    return this._measurer;
+  }
+
+  /** Exposes the renderer config for LayoutIndex building */
+  get config(): RendererConfig {
+    return this._config;
+  }
+
+  /** Returns the last computed layout result */
+  getLastLayout(): LayoutPage[] {
+    return this._lastLayout;
+  }
+
+  /** Returns the last CSS width used during rendering */
+  getLastCssWidth(): number {
+    return this._lastCssWidth;
   }
 
   // ─── DPR Scaling ─────────────────────────────────────────────────
@@ -139,7 +157,7 @@ export class CanvasRenderer {
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
 
     // Clear font cache since context was reset
-    this.measurer.clearCache();
+    this._measurer.clearCache();
   }
 
   // ─── Style Resolution ────────────────────────────────────────────
@@ -156,10 +174,12 @@ export class CanvasRenderer {
       ...doc.pageSettings,
     };
 
-    const {canvasPadding, pageGap} = this.config;
+    const {canvasPadding, pageGap} = this._config;
 
     // Layout the document into pages
     const pages = this.layout(doc);
+    this._lastLayout = pages;
+
     const pageCount = Math.max(pages.length, 1);
 
     // Calculate total canvas height
@@ -172,6 +192,7 @@ export class CanvasRenderer {
 
     // Get CSS width from the canvas element's layout
     const cssWidth = this.canvas.clientWidth || this.canvas.offsetWidth || 800;
+    this._lastCssWidth = cssWidth;
 
     // Setup DPR-aware canvas
     this.setupDPR(cssWidth, totalHeight);
@@ -216,6 +237,40 @@ export class CanvasRenderer {
     }
   }
 
+  // ─── Caret & Selection Drawing ────────────────────────────────────
+
+  /**
+   * Draws a caret (cursor line) at the given position.
+   * Called by the Editor orchestrator after the main render pass.
+   */
+  drawCaret(x: number, y: number, height: number, color: string = "#1a1a2e"): void {
+    this.ctx.save();
+    this.ctx.fillStyle = color;
+    this.ctx.fillRect(x, y, 1.5, height);
+    this.ctx.restore();
+  }
+
+  /**
+   * Draws selection highlight rectangles.
+   * Called by the Editor orchestrator after the main render pass
+   * but before the caret.
+   */
+  drawSelectionRects(
+    rects: CharacterRect[],
+    color: string = "rgba(66, 133, 244, 0.3)"
+  ): void {
+    if (rects.length === 0) return;
+
+    this.ctx.save();
+    this.ctx.fillStyle = color;
+
+    for (const rect of rects) {
+      this.ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    }
+
+    this.ctx.restore();
+  }
+
   // ─── Layout Engine ───────────────────────────────────────────────
 
   /**
@@ -241,7 +296,7 @@ export class CanvasRenderer {
 
     for (const run of paragraph.runs) {
       const style = this.resolveRunStyle(run, docDefault);
-      const measured = this.measurer.measureWords(run.text, style);
+      const measured = this._measurer.measureWords(run.text, style);
 
       for (const {word, width} of measured) {
         words.push({text: word, style, width});
@@ -259,7 +314,8 @@ export class CanvasRenderer {
   private wrapLines(
     words: StyledWord[],
     contentWidth: number,
-    paragraph: Paragraph
+    paragraph: Paragraph,
+    paragraphIndex: number
   ): LayoutLine[] {
     const lines: LayoutLine[] = [];
     let currentLine: StyledWord[] = [];
@@ -284,7 +340,14 @@ export class CanvasRenderer {
       if (wouldExceed && currentLine.length > 0) {
         // Finalize current line
         lines.push(
-          this.buildLayoutLine(currentLine, currentWidth, lineHeightMultiplier)
+          this.buildLayoutLine(
+            currentLine,
+            currentWidth,
+            lineHeightMultiplier,
+            paragraphIndex,
+            lines.length === 0,
+            false
+          )
         );
         currentLine = [];
         currentWidth = 0;
@@ -302,8 +365,35 @@ export class CanvasRenderer {
     // Finalize last line
     if (currentLine.length > 0) {
       lines.push(
-        this.buildLayoutLine(currentLine, currentWidth, lineHeightMultiplier)
+        this.buildLayoutLine(
+          currentLine,
+          currentWidth,
+          lineHeightMultiplier,
+          paragraphIndex,
+          lines.length === 0,
+          true
+        )
       );
+    }
+
+    // Handle empty paragraphs (no words at all)
+    if (lines.length === 0) {
+      lines.push(
+        this.buildLayoutLine(
+          [],
+          0,
+          lineHeightMultiplier,
+          paragraphIndex,
+          true,
+          true
+        )
+      );
+    }
+
+    // Mark first and last lines
+    if (lines.length > 0) {
+      lines[0]!.isFirstLineOfParagraph = true;
+      lines[lines.length - 1]!.isLastLineOfParagraph = true;
     }
 
     return lines;
@@ -316,15 +406,25 @@ export class CanvasRenderer {
   private buildLayoutLine(
     words: StyledWord[],
     totalWidth: number,
-    lineHeightMultiplier: number
+    lineHeightMultiplier: number,
+    paragraphIndex: number,
+    isFirstLine: boolean,
+    isLastLine: boolean
   ): LayoutLine {
     let maxAscent = 0;
     let maxDescent = 0;
 
     for (const word of words) {
-      const measurement = this.measurer.measure(word.text, word.style);
+      const measurement = this._measurer.measure(word.text, word.style);
       maxAscent = Math.max(maxAscent, measurement.ascent);
       maxDescent = Math.max(maxDescent, measurement.descent);
+    }
+
+    // For empty lines, estimate height from default style
+    if (words.length === 0) {
+      const defaultMeasurement = this._measurer.measure("X", resolveStyle());
+      maxAscent = defaultMeasurement.ascent;
+      maxDescent = defaultMeasurement.descent;
     }
 
     const naturalHeight = maxAscent + maxDescent;
@@ -338,6 +438,9 @@ export class CanvasRenderer {
       lineHeight,
       spaceBefore: 0,
       spaceAfter: 0,
+      paragraphIndex,
+      isFirstLineOfParagraph: isFirstLine,
+      isLastLineOfParagraph: isLastLine,
     };
   }
 
@@ -367,7 +470,8 @@ export class CanvasRenderer {
       currentY = 0;
     };
 
-    for (const paragraph of doc.paragraphs) {
+    for (let pi = 0; pi < doc.paragraphs.length; pi++) {
+      const paragraph = doc.paragraphs[pi]!;
       const spaceBefore =
         paragraph.spaceBefore ?? DEFAULT_PARAGRAPH_PROPS.spaceBefore;
       const spaceAfter =
@@ -375,7 +479,7 @@ export class CanvasRenderer {
 
       // Tokenize and wrap
       const words = this.tokenizeParagraph(paragraph, doc.defaultStyle);
-      const lines = this.wrapLines(words, contentWidth, paragraph);
+      const lines = this.wrapLines(words, contentWidth, paragraph, pi);
 
       // Attach paragraph spacing to the first and last lines
       const firstLine = lines[0];
@@ -406,7 +510,7 @@ export class CanvasRenderer {
    * Draws the full background fill.
    */
   private drawBackground(width: number, height: number): void {
-    this.ctx.fillStyle = this.config.backgroundColor;
+    this.ctx.fillStyle = this._config.backgroundColor;
     this.ctx.fillRect(0, 0, width, height);
   }
 
@@ -419,7 +523,7 @@ export class CanvasRenderer {
     width: number,
     height: number
   ): void {
-    const {pageShadow, pageColor} = this.config;
+    const {pageShadow, pageColor} = this._config;
 
     // Shadow
     this.ctx.save();
@@ -448,7 +552,7 @@ export class CanvasRenderer {
     let cursorX = x;
 
     for (const word of line.words) {
-      this.measurer.applyFont(word.style);
+      this._measurer.applyFont(word.style);
       this.ctx.fillStyle = word.style.color;
       this.ctx.fillText(word.text, cursorX, baselineY);
       cursorX += word.width;

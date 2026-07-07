@@ -1,8 +1,8 @@
 "use client";
 
-import {useEffect, useState} from "react";
+import {useCallback, useEffect, useState} from "react";
 import {FreewriterCanvas} from "@freewriter/react";
-import type {FreewriterDocument} from "@freewriter/core";
+import type {FreewriterDocument, DocumentPosition} from "@freewriter/core";
 
 /**
  * Hardcoded sample document to verify the canvas rendering pipeline.
@@ -10,7 +10,7 @@ import type {FreewriterDocument} from "@freewriter/core";
  * different sizes) to exercise the layout engine thoroughly.
  */
 const sampleDocument: FreewriterDocument = {
-  title: "Freewriter — Rendering Pipeline Test",
+  title: "Freewriter — Interactive Editor Test",
   pageSettings: {
     width: 612,
     height: 792,
@@ -228,61 +228,11 @@ const sampleDocument: FreewriterDocument = {
       lineHeight: 1.65,
       spaceAfter: 14,
     },
-    // ── Section heading 3 ──
-    {
-      runs: [
-        {
-          text: "Device Pixel Ratio & Crisp Text",
-          style: {
-            fontSize: 18,
-            fontWeight: "bold",
-            color: "#1a1a2e",
-          },
-        },
-      ],
-      lineHeight: 1.3,
-      spaceBefore: 8,
-      spaceAfter: 10,
-    },
-    // ── Body paragraph 5 ──
-    {
-      runs: [
-        {
-          text: "One of the first challenges in canvas rendering is achieving crisp, non-blurry text on high-DPI displays. Modern screens (Retina, 4K) have a device pixel ratio (DPR) greater than 1, meaning each CSS pixel maps to multiple physical pixels. Without proper handling, canvas text appears fuzzy and unprofessional.",
-          style: {fontSize: 13},
-        },
-      ],
-      lineHeight: 1.65,
-      spaceAfter: 14,
-    },
-    // ── Body paragraph 6 ──
-    {
-      runs: [
-        {
-          text: "Freewriter solves this by scaling the canvas backing store by ",
-          style: {fontSize: 13},
-        },
-        {
-          text: "window.devicePixelRatio",
-          style: {
-            fontSize: 12,
-            fontFamily: "JetBrains Mono",
-            color: "#6c63ff",
-          },
-        },
-        {
-          text: " while keeping the CSS display size unchanged. All drawing operations are then scaled inversely, so coordinates remain in logical CSS pixels while the actual rendering happens at full physical resolution. The result is beautifully sharp text that rivals native applications.",
-          style: {fontSize: 13},
-        },
-      ],
-      lineHeight: 1.65,
-      spaceAfter: 14,
-    },
     // ── Closing note ──
     {
       runs: [
         {
-          text: "This document is rendered entirely on Canvas — no DOM text nodes, no contenteditable, no HTML-in-Canvas tricks. Every word you see was drawn with fillText().",
+          text: "Click anywhere to start editing. This document is fully interactive — try typing, selecting text, and using keyboard shortcuts.",
           style: {
             fontSize: 12,
             fontStyle: "italic",
@@ -299,9 +249,24 @@ const sampleDocument: FreewriterDocument = {
 
 export default function PlaygroundPage() {
   const [dpr, setDpr] = useState(1);
+  const [cursorInfo, setCursorInfo] = useState<DocumentPosition>({
+    paragraphIndex: 0,
+    charOffset: 0,
+  });
+  const [paragraphCount, setParagraphCount] = useState(
+    sampleDocument.paragraphs.length
+  );
 
   useEffect(() => {
     setDpr(window.devicePixelRatio || 1);
+  }, []);
+
+  const handleCursorChange = useCallback((cursor: DocumentPosition) => {
+    setCursorInfo(cursor);
+  }, []);
+
+  const handleDocumentChange = useCallback((doc: FreewriterDocument) => {
+    setParagraphCount(doc.paragraphs.length);
   }, []);
 
   return (
@@ -316,12 +281,12 @@ export default function PlaygroundPage() {
             <span className="topbar-logo-text">Freewriter</span>
           </div>
           <div className="topbar-divider" aria-hidden="true"/>
-          <span className="topbar-doc-title">Rendering Pipeline Test</span>
+          <span className="topbar-doc-title">Interactive Editor Test</span>
         </div>
         <div className="topbar-right">
           <span className="topbar-badge">
             <span className="topbar-badge-dot" aria-hidden="true"/>
-            Phase 1 — Canvas Foundation
+            Phase 2 — Core Editor Loop
           </span>
           <span className="topbar-status">
             <span className="topbar-status-dot" aria-hidden="true"/>
@@ -333,7 +298,11 @@ export default function PlaygroundPage() {
       {/* ── Canvas Editor Area ───────────────────────────────────── */}
       <section className="editor-area" id="editor-area">
         <div className="canvas-container">
-          <FreewriterCanvas document={sampleDocument}/>
+          <FreewriterCanvas
+            document={sampleDocument}
+            onCursorChange={handleCursorChange}
+            onDocumentChange={handleDocumentChange}
+          />
         </div>
       </section>
 
@@ -341,13 +310,17 @@ export default function PlaygroundPage() {
       <footer className="bottombar" id="bottombar">
         <div className="bottombar-section">
           <span className="bottombar-item">
-            {sampleDocument.paragraphs.length} paragraphs
+            {paragraphCount} paragraphs
           </span>
           <span className="bottombar-item">
             US Letter (8.5&quot; × 11&quot;)
           </span>
         </div>
         <div className="bottombar-section">
+          <span className="bottombar-item">
+            Para {cursorInfo.paragraphIndex + 1}, Char{" "}
+            {cursorInfo.charOffset}
+          </span>
           <span className="bottombar-item bottombar-item--accent">
             Canvas 2D
           </span>
